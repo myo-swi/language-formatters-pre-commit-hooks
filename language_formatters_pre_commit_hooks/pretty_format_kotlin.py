@@ -6,6 +6,7 @@ import typing
 from packaging.version import Version
 
 from language_formatters_pre_commit_hooks import _get_default_version
+from language_formatters_pre_commit_hooks.pre_conditions import get_jdk_version
 from language_formatters_pre_commit_hooks.pre_conditions import assert_max_jdk_version
 from language_formatters_pre_commit_hooks.pre_conditions import java_required
 from language_formatters_pre_commit_hooks.utils import download_url
@@ -56,6 +57,24 @@ def pretty_format_kotlin(argv: typing.Optional[typing.List[str]] = None) -> int:
     )
 
     parser.add_argument("filenames", nargs="*", help="Filenames to fix")
+    parser.add_argument(
+        "--enable-java-version-check",
+        action="store_true",
+        dest="enable_java_version_check",
+        help="Check if java version is compatible",
+    )
+    parser.add_argument(
+        "--fail-never",
+        action="store_true",
+        dest="fail_never",
+        help="Never fail",
+    )
+    parser.add_argument(
+        "--java-opts",
+        dest="java_opts",
+        default="", # "--add-opens=java.base/java.lang=ALL-UNNAMED"
+        help="Never fail",
+    )
     args = parser.parse_args(argv)
 
     # KTLint does not yet support Java 16+, before that version.
@@ -63,17 +82,26 @@ def pretty_format_kotlin(argv: typing.Optional[typing.List[str]] = None) -> int:
     # Java Stacktrace
     # the tool can only be executed on Java up to version 15.
     # Context: https://github.com/JLLeitschuh/ktlint-gradle/issues/461
-    assert_max_jdk_version(Version("16.0"), inclusive=False)  # pragma: no cover
+    if args.enable_java_version_check:
+        assert_max_jdk_version(Version("16.0"), inclusive=False)  # pragma: no cover
 
     ktlint_jar = _download_kotlin_formatter_jar(
         args.ktlint_version,
     )
 
+    java_opts = args.java_opts.split(" ")
+    if java_opts == [""]:
+        jdk_version = get_jdk_version()
+        if jdk_version >= Version("16.0"):
+            java_opts = ["--add-opens=java.base/java.lang=ALL-UNNAMED", "--add-exports=java.base/sun.nio.ch=ALL-UNNAMED"]
+        else:
+            java_opts = []
+
     # ktlint does not return exit-code!=0 if we're formatting them.
     # To workaround this limitation we do run ktlint in check mode only,
     # which provides the expected exit status and we run it again in format
     # mode if autofix flag is enabled
-    check_status, check_output = run_command("java", "-jar", ktlint_jar, "--verbose", "--relative", "--", *_fix_paths(args.filenames))
+    check_status, check_output = run_command("java", *java_opts, "-jar", ktlint_jar, "--verbose", "--relative", "--", *_fix_paths(args.filenames))
 
     not_pretty_formatted_files: typing.Set[str] = set()
     if check_status != 0:
@@ -81,7 +109,7 @@ def pretty_format_kotlin(argv: typing.Optional[typing.List[str]] = None) -> int:
 
         if args.autofix:
             print("Running ktlint format on {}".format(not_pretty_formatted_files))
-            run_command("java", "-jar", ktlint_jar, "--verbose", "--relative", "--format", "--", *_fix_paths(not_pretty_formatted_files))
+            run_command("java", *java_opts, "-jar", ktlint_jar, "--verbose", "--relative", "--format", "--", *_fix_paths(not_pretty_formatted_files))
 
     status = 0
     if not_pretty_formatted_files:
@@ -93,8 +121,11 @@ def pretty_format_kotlin(argv: typing.Optional[typing.List[str]] = None) -> int:
             ),
         )
 
+    if args.fail_never:
+        return 0
+
     return status
 
 
 if __name__ == "__main__":
-    sys.exit(pretty_format_kotlin())
+    sys.exit(pretty_format_kotlin(sys.argv))
